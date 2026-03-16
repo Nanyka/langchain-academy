@@ -6,9 +6,9 @@ langsmith
 langchain-community
 langchain-core
 langchain-openai
+langchain-ollama
 notebook
 langchain-tavily
 wikipedia
 trustcall
 langgraph-cli[inmem]
-
