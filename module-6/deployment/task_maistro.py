@@ -11,7 +11,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import merge_message_runs
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from langchain_openai import ChatOpenAI
+import os
+
+from langchain_ollama import ChatOllama
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -138,7 +140,8 @@ class UpdateMemory(TypedDict):
     update_type: Literal['user', 'todo', 'instructions']
 
 # Initialize the model
-model = ChatOpenAI(model="gpt-4o", temperature=0)
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+model = ChatOllama(model=OLLAMA_MODEL, temperature=0)
 
 ## Create the Trustcall extractors for updating the user profile and ToDo list
 profile_extractor = create_extractor(

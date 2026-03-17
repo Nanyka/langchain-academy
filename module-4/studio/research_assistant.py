@@ -6,14 +6,17 @@ from typing_extensions import TypedDict
 from langchain_community.document_loaders import WikipediaLoader
 from langchain_tavily import TavilySearch  # updated 1.0
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_buffer_string
-from langchain_openai import ChatOpenAI
+import os
+
+from langchain_ollama import ChatOllama
 
 from langgraph.constants import Send
 from langgraph.graph import END, MessagesState, START, StateGraph
 
 ### LLM
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0) 
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+llm = ChatOllama(model=OLLAMA_MODEL, temperature=0) 
 
 ### Schema 
 

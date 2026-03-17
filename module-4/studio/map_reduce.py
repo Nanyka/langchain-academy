@@ -4,7 +4,9 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel
 
-from langchain_openai import ChatOpenAI 
+import os
+
+from langchain_ollama import ChatOllama 
 
 from langgraph.constants import Send
 from langgraph.graph import END, StateGraph, START
@@ -15,7 +17,8 @@ joke_prompt = """Generate a joke about {subject}"""
 best_joke_prompt = """Below are a bunch of jokes about {topic}. Select the best one! Return the ID of the best one, starting 0 as the ID for the first joke. Jokes: \n\n  {jokes}"""
 
 # LLM
-model = ChatOpenAI(model="gpt-4o", temperature=0) 
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+model = ChatOllama(model=OLLAMA_MODEL, temperature=0) 
 
 # Define the state
 class Subjects(BaseModel):

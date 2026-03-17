@@ -38,6 +38,7 @@ services:
                 condition: service_healthy
         environment:
             REDIS_URI: redis://langgraph-redis:6379
-            OPENAI_API_KEY: "your_openai_api_key"
+            OLLAMA_HOST: "http://host.docker.internal:11434"
+            OLLAMA_MODEL: "llama3.1"
             LANGSMITH_API_KEY: "your_langsmith_api_key"
             POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable

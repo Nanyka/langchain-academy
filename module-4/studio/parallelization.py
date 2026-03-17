@@ -8,11 +8,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.document_loaders import WikipediaLoader
 from langchain_tavily import TavilySearch  # updated 1.0
 
-from langchain_openai import ChatOpenAI
+import os
+
+from langchain_ollama import ChatOllama
 
 from langgraph.graph import StateGraph, START, END
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0) 
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+llm = ChatOllama(model=OLLAMA_MODEL, temperature=0) 
 
 class State(TypedDict):
     question: str

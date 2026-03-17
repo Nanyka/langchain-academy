@@ -7,13 +7,16 @@ from trustcall import create_extractor
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import merge_message_runs
 from langchain_core.runnables.config import RunnableConfig
-from langchain_openai import ChatOpenAI
+import os
+
+from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.store.base import BaseStore
 import configuration
 
 # Initialize the LLM
-model = ChatOpenAI(model="gpt-4o", temperature=0) 
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+model = ChatOllama(model=OLLAMA_MODEL, temperature=0) 
 
 # Memory schema
 class Memory(BaseModel):
