@@ -36,7 +36,7 @@ def divide(a: int, b: int) -> float:
 tools = [add, multiply, divide]
 
 # Define LLM with bound tools
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 llm = ChatOllama(model=OLLAMA_MODEL, temperature=0)
 llm_with_tools = llm.bind_tools(tools)
 
