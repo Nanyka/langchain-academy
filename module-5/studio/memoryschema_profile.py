@@ -18,9 +18,9 @@ model = ChatOllama(model=OLLAMA_MODEL, temperature=0)
 # Schema 
 class UserProfile(BaseModel):
     """ Profile of a user """
-    user_name: str = Field(description="The user's preferred name")
-    user_location: str = Field(description="The user's location")
-    interests: list = Field(description="A list of the user's interests")
+    user_name: str | None = Field(default=None, description="The user's preferred name")
+    user_location: str | None = Field(default=None, description="The user's location")
+    interests: list[str] = Field(default_factory=list, description="A list of the user's interests")
 
 # Create the extractor
 trustcall_extractor = create_extractor(
@@ -55,8 +55,8 @@ def call_model(state: MessagesState, config: RunnableConfig, store: BaseStore):
     if existing_memory and existing_memory.value:
         memory_dict = existing_memory.value
         formatted_memory = (
-            f"Name: {memory_dict.get('user_name', 'Unknown')}\n"
-            f"Location: {memory_dict.get('user_location', 'Unknown')}\n"
+            f"Name: {memory_dict.get('user_name') or 'Unknown'}\n"
+            f"Location: {memory_dict.get('user_location') or 'Unknown'}\n"
             f"Interests: {', '.join(memory_dict.get('interests', []))}"      
         )
     else:
@@ -83,19 +83,41 @@ def write_memory(state: MessagesState, config: RunnableConfig, store: BaseStore)
     # Retrieve existing memory from the store
     namespace = ("memory", user_id)
     existing_memory = store.get(namespace, "user_memory")
-        
+    existing_value = existing_memory.value if existing_memory else {}
+
     # Get the profile as the value from the list, and convert it to a JSON doc
-    existing_profile = {"UserProfile": existing_memory.value} if existing_memory else None
-    
-    # Invoke the extractor
-    result = trustcall_extractor.invoke({"messages": [SystemMessage(content=TRUSTCALL_INSTRUCTION)]+state["messages"], "existing": existing_profile})
-    
-    # Get the updated profile as a JSON object
-    updated_profile = result["responses"][0].model_dump()
+    existing_profile = {"UserProfile": existing_value} if existing_value else None
+    extractor_messages = [SystemMessage(content=TRUSTCALL_INSTRUCTION)] + state["messages"]
+    updated_profile = {}
+
+    try:
+        result = trustcall_extractor.invoke(
+            {"messages": extractor_messages, "existing": existing_profile}
+        )
+        responses = result.get("responses", [])
+        if responses:
+            updated_profile = responses[0].model_dump(
+                exclude_none=True, exclude_defaults=True
+            )
+    except Exception:
+        updated_profile = {}
+
+    if not updated_profile:
+        fallback_model = model.with_structured_output(UserProfile)
+        fallback_result = fallback_model.invoke(extractor_messages)
+        updated_profile = fallback_result.model_dump(
+            exclude_none=True, exclude_defaults=True
+        )
+
+    if not updated_profile:
+        return
+
+    merged_profile = dict(existing_value)
+    merged_profile.update(updated_profile)
 
     # Save the updated profile
     key = "user_memory"
-    store.put(namespace, key, updated_profile)
+    store.put(namespace, key, merged_profile)
 
 # Define the graph
 builder = StateGraph(MessagesState,config_schema=configuration.Configuration)

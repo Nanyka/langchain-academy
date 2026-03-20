@@ -1,4 +1,4 @@
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables.config import RunnableConfig
 import os
 
@@ -93,9 +93,29 @@ def write_memory(state: MessagesState, config: RunnableConfig, store: BaseStore)
     system_msg = CREATE_MEMORY_INSTRUCTION.format(memory=existing_memory_content)
     new_memory = model.invoke([SystemMessage(content=system_msg)]+state['messages'])
 
+    memory_content = (new_memory.content or "").strip()
+
+    if not memory_content:
+        fallback_items = []
+
+        if existing_memory and existing_memory_content != "No existing memory found.":
+            fallback_items.append(existing_memory_content.strip())
+
+        fallback_items.extend(
+            msg.content.strip()
+            for msg in state["messages"]
+            if isinstance(msg, HumanMessage) and isinstance(msg.content, str) and msg.content.strip()
+        )
+
+        unique_items = list(dict.fromkeys(fallback_items))
+        memory_content = "\n".join(f"- {item}" for item in unique_items if item)
+
+    if not memory_content:
+        return
+
     # Overwrite the existing memory in the store 
     key = "user_memory"
-    store.put(namespace, key, {"memory": new_memory.content})
+    store.put(namespace, key, {"memory": memory_content})
 
 # Define the graph
 builder = StateGraph(MessagesState,config_schema=configuration.Configuration)

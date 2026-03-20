@@ -56,7 +56,7 @@ class InterviewState(MessagesState):
     sections: list # Final key we duplicate in outer state for Send() API
 
 class SearchQuery(BaseModel):
-    search_query: str = Field(None, description="Search query for retrieval.")
+    search_query: str = Field(..., description="Search query for retrieval.")
 
 class ResearchGraphState(TypedDict):
     topic: str # Research topic
@@ -157,6 +157,29 @@ Pay particular attention to the final question posed by the analyst.
 
 Convert this final question into a well-structured web search query""")
 
+def build_search_query(messages):
+
+    """Generate a non-empty query, falling back to plain text when needed."""
+
+    structured_llm = llm.with_structured_output(SearchQuery)
+    result = structured_llm.invoke([search_instructions] + messages)
+    query = getattr(result, "search_query", None)
+
+    if isinstance(query, str) and query.strip():
+        return query.strip()
+
+    fallback = llm.invoke(
+        [search_instructions]
+        + messages
+        + [HumanMessage(content="Return only the search query as plain text.")]
+    )
+    query = getattr(fallback, "content", "")
+
+    if isinstance(query, str) and query.strip():
+        return query.strip()
+
+    raise ValueError("Search query generation returned an empty result.")
+
 def search_web(state: InterviewState):
     
     """ Retrieve docs from web search """
@@ -165,11 +188,10 @@ def search_web(state: InterviewState):
     tavily_search = TavilySearch(max_results=3)
 
     # Search query
-    structured_llm = llm.with_structured_output(SearchQuery)
-    search_query = structured_llm.invoke([search_instructions]+state['messages'])
+    search_query = build_search_query(state["messages"])
     
     # Search
-    data = tavily_search.invoke({"query": search_query.search_query})
+    data = tavily_search.invoke({"query": search_query})
     search_docs = data.get("results", data)
 
      # Format
@@ -187,11 +209,10 @@ def search_wikipedia(state: InterviewState):
     """ Retrieve docs from wikipedia """
 
     # Search query
-    structured_llm = llm.with_structured_output(SearchQuery)
-    search_query = structured_llm.invoke([search_instructions]+state['messages'])
+    search_query = build_search_query(state["messages"])
     
     # Search
-    search_docs = WikipediaLoader(query=search_query.search_query, 
+    search_docs = WikipediaLoader(query=search_query, 
                                   load_max_docs=2).load()
 
      # Format
