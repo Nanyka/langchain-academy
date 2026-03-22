@@ -1,11 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from trustcall import create_extractor
-
-from typing import Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import merge_message_runs
@@ -24,78 +22,97 @@ import configuration
 
 ## Utilities 
 
-# Inspect the tool calls for Trustcall
-class Spy:
-    def __init__(self):
-        self.called_tools = []
+def _normalize_text(value: str) -> str:
+    return " ".join(value.strip().lower().split())
 
-    def __call__(self, run):
-        q = [run]
-        while q:
-            r = q.pop()
-            if r.child_runs:
-                q.extend(r.child_runs)
-            if r.run_type == "chat_model":
-                self.called_tools.append(
-                    r.outputs["generations"][0][0]["message"]["kwargs"]["tool_calls"]
-                )
 
-# Extract information from tool calls for both patches and new memories in Trustcall
-def extract_tool_info(tool_calls, schema_name="Memory"):
-    """Extract information from tool calls for both patches and new memories.
-    
-    Args:
-        tool_calls: List of tool calls from the model
-        schema_name: Name of the schema tool (e.g., "Memory", "ToDo", "Profile")
-    """
-    # Initialize list of changes
-    changes = []
-    
-    for call_group in tool_calls:
-        for call in call_group:
-            if call['name'] == 'PatchDoc':
-                # Check if there are any patches
-                if call['args']['patches']:
-                    changes.append({
-                        'type': 'update',
-                        'doc_id': call['args']['json_doc_id'],
-                        'planned_edits': call['args']['planned_edits'],
-                        'value': call['args']['patches'][0]['value']
-                    })
-                else:
-                    # Handle case where no changes were needed
-                    changes.append({
-                        'type': 'no_update',
-                        'doc_id': call['args']['json_doc_id'],
-                        'planned_edits': call['args']['planned_edits']
-                    })
-            elif call['name'] == schema_name:
-                changes.append({
-                    'type': 'new',
-                    'value': call['args']
-                })
+def _message_text(message: Any) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+        return " ".join(parts)
+    return str(content)
 
-    # Format results as a single string
-    result_parts = []
-    for change in changes:
-        if change['type'] == 'update':
-            result_parts.append(
-                f"Document {change['doc_id']} updated:\n"
-                f"Plan: {change['planned_edits']}\n"
-                f"Added content: {change['value']}"
-            )
-        elif change['type'] == 'no_update':
-            result_parts.append(
-                f"Document {change['doc_id']} unchanged:\n"
-                f"{change['planned_edits']}"
-            )
-        else:
-            result_parts.append(
-                f"New {schema_name} created:\n"
-                f"Content: {change['value']}"
-            )
-    
-    return "\n\n".join(result_parts)
+
+def _last_human_message_text(messages: list[Any]) -> str:
+    for message in reversed(messages):
+        if getattr(message, "type", None) == "human":
+            return _normalize_text(_message_text(message))
+    return ""
+
+
+def _is_read_only_todo_request(messages: list[Any]) -> bool:
+    message_text = _last_human_message_text(messages)
+    if not message_text:
+        return False
+
+    todo_terms = ("todo", "to do", "to-do", "task", "tasks")
+    read_terms = ("summary", "summarize", "list", "show", "what are", "what's", "whats", "remind me", "tell me")
+    write_terms = ("add ", "create ", "update ", "change ", "modify ", "mark ", "delete ", "remove ", "archive ")
+
+    mentions_todos = any(term in message_text for term in todo_terms)
+    asks_to_read = any(term in message_text for term in read_terms)
+    asks_to_write = any(term in message_text for term in write_terms)
+    return mentions_todos and asks_to_read and not asks_to_write
+
+
+def _coerce_tool_calls(messages: list, schema_name: str) -> list[dict[str, Any]]:
+    """Run a focused tool-calling extraction prompt and return matching tool calls."""
+    response = model.invoke(messages)
+    return [call for call in getattr(response, "tool_calls", []) if call["name"] == schema_name]
+
+
+def _merge_unique(existing: list[str], updates: list[str]) -> list[str]:
+    merged = list(existing)
+    seen = {_normalize_text(item) for item in existing}
+    for item in updates:
+        if item and _normalize_text(item) not in seen:
+            merged.append(item)
+            seen.add(_normalize_text(item))
+    return merged
+
+
+def _merge_profile(existing_profile: Optional[dict[str, Any]], new_profile: "Profile") -> dict[str, Any]:
+    merged = dict(existing_profile or {})
+    profile_data = new_profile.model_dump(mode="json")
+
+    for field in ("name", "location", "job"):
+        if profile_data.get(field):
+            merged[field] = profile_data[field]
+
+    merged["connections"] = _merge_unique(
+        list(existing_profile.get("connections", [])) if existing_profile else [],
+        profile_data.get("connections", []),
+    )
+    merged["interests"] = _merge_unique(
+        list(existing_profile.get("interests", [])) if existing_profile else [],
+        profile_data.get("interests", []),
+    )
+    return merged
+
+
+def _sanitize_todo_args(args: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(args)
+
+    deadline = sanitized.get("deadline")
+    if isinstance(deadline, dict):
+        sanitized["deadline"] = None
+    elif isinstance(deadline, str):
+        try:
+            sanitized["deadline"] = datetime.fromisoformat(deadline)
+        except ValueError:
+            sanitized["deadline"] = None
+
+    solutions = sanitized.get("solutions")
+    if not isinstance(solutions, list) or not solutions:
+        sanitized["solutions"] = ["No specific solution provided."]
+
+    return sanitized
 
 ## Schema definitions
 
@@ -143,13 +160,6 @@ class UpdateMemory(TypedDict):
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
 model = ChatOllama(model=OLLAMA_MODEL, temperature=0)
 
-## Create the Trustcall extractors for updating the user profile and ToDo list
-profile_extractor = create_extractor(
-    model,
-    tools=[Profile],
-    tool_choice="Profile",
-)
-
 ## Prompts 
 
 # Chatbot instruction for choosing what to update and what tools to call 
@@ -191,16 +201,21 @@ Here are your instructions for reasoning about the user's messages:
 
 4. Err on the side of updating the todo list. No need to ask for explicit permission.
 
-5. Respond naturally to user user after a tool call was made to save memories, or if no tool call was made."""
+5. Do not update the todo list when the user is only asking to view, summarize, or discuss existing tasks.
 
-# Trustcall instruction
-TRUSTCALL_INSTRUCTION = """Reflect on following interaction. 
+6. Respond naturally to user user after a tool call was made to save memories, or if no tool call was made."""
 
-Use the provided tools to retain any necessary memories about the user. 
+# Focused extraction prompts for updating stored memories
+PROFILE_UPDATE_INSTRUCTION = """Extract profile updates from the conversation.
 
-Use parallel tool calling to handle updates and insertions simultaneously.
+Use the Profile tool to capture only information explicitly stated or strongly implied.
+Leave fields empty if the conversation does not update them."""
 
-System Time: {time}"""
+TODO_UPDATE_INSTRUCTION = """Extract ToDo items from the conversation.
+
+Use the ToDo tool once for each task the user wants tracked.
+Prefer concrete tasks with helpful solutions when the conversation provides them.
+If no new or updated task is mentioned, do not call any tool."""
 
 # Instructions for updating the ToDo list
 CREATE_INSTRUCTIONS = """Reflect on the following interaction.
@@ -249,7 +264,11 @@ def task_mAIstro(state: MessagesState, config: RunnableConfig, store: BaseStore)
     system_msg = MODEL_SYSTEM_MESSAGE.format(task_maistro_role=task_maistro_role, user_profile=user_profile, todo=todo, instructions=instructions)
 
     # Respond using memory as well as the chat history
-    response = model.bind_tools([UpdateMemory], parallel_tool_calls=False).invoke([SystemMessage(content=system_msg)]+state["messages"])
+    model_input = [SystemMessage(content=system_msg)] + state["messages"]
+    if _is_read_only_todo_request(state["messages"]):
+        response = model.invoke(model_input)
+    else:
+        response = model.bind_tools([UpdateMemory]).invoke(model_input)
 
     return {"messages": [response]}
 
@@ -265,31 +284,22 @@ def update_profile(state: MessagesState, config: RunnableConfig, store: BaseStor
     # Define the namespace for the memories
     namespace = ("profile", todo_category, user_id)
 
-    # Retrieve the most recent memories for context
     existing_items = store.search(namespace)
+    existing_profile = existing_items[0].value if existing_items else None
 
-    # Format the existing memories for the Trustcall extractor
-    tool_name = "Profile"
-    existing_memories = ([(existing_item.key, tool_name, existing_item.value)
-                          for existing_item in existing_items]
-                          if existing_items
-                          else None
-                        )
+    extraction_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=PROFILE_UPDATE_INSTRUCTION)] + state["messages"][:-1]
+        )
+    )
+    extraction_response = model.bind_tools([Profile], tool_choice="Profile").invoke(extraction_messages)
 
-    # Merge the chat history and the instruction
-    TRUSTCALL_INSTRUCTION_FORMATTED=TRUSTCALL_INSTRUCTION.format(time=datetime.now().isoformat())
-    updated_messages=list(merge_message_runs(messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)] + state["messages"][:-1]))
+    if extraction_response.tool_calls:
+        profile_update = Profile.model_validate(extraction_response.tool_calls[0]["args"])
+        merged_profile = _merge_profile(existing_profile, profile_update)
+        profile_key = existing_items[0].key if existing_items else str(uuid.uuid4())
+        store.put(namespace, profile_key, merged_profile)
 
-    # Invoke the extractor
-    result = profile_extractor.invoke({"messages": updated_messages, 
-                                         "existing": existing_memories})
-
-    # Save save the memories from Trustcall to the store
-    for r, rmeta in zip(result["responses"], result["response_metadata"]):
-        store.put(namespace,
-                  rmeta.get("json_doc_id", str(uuid.uuid4())),
-                  r.model_dump(mode="json"),
-            )
     tool_calls = state['messages'][-1].tool_calls
     # Return tool message with update verification
     return {"messages": [{"role": "tool", "content": "updated profile", "tool_call_id":tool_calls[0]['id']}]}
@@ -306,48 +316,49 @@ def update_todos(state: MessagesState, config: RunnableConfig, store: BaseStore)
     # Define the namespace for the memories
     namespace = ("todo", todo_category, user_id)
 
-    # Retrieve the most recent memories for context
     existing_items = store.search(namespace)
+    existing_by_task = {}
+    for item in existing_items:
+        task = item.value.get("task")
+        if task:
+            existing_by_task[_normalize_text(task)] = item
 
-    # Format the existing memories for the Trustcall extractor
-    tool_name = "ToDo"
-    existing_memories = ([(existing_item.key, tool_name, existing_item.value)
-                          for existing_item in existing_items]
-                          if existing_items
-                          else None
-                        )
+    extraction_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=TODO_UPDATE_INSTRUCTION)] + state["messages"][:-1]
+        )
+    )
+    extraction_response = model.bind_tools([ToDo]).invoke(extraction_messages)
 
-    # Merge the chat history and the instruction
-    TRUSTCALL_INSTRUCTION_FORMATTED=TRUSTCALL_INSTRUCTION.format(time=datetime.now().isoformat())
-    updated_messages=list(merge_message_runs(messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)] + state["messages"][:-1]))
+    added = 0
+    updated = 0
+    for call in extraction_response.tool_calls:
+        if call["name"] != "ToDo":
+            continue
+        try:
+            todo_item = ToDo.model_validate(_sanitize_todo_args(call["args"]))
+        except ValidationError:
+            continue
+        todo_data = todo_item.model_dump(mode="json")
+        normalized_task = _normalize_text(todo_data["task"])
+        existing_item = existing_by_task.get(normalized_task)
+        if existing_item:
+            store.put(namespace, existing_item.key, todo_data)
+            updated += 1
+        else:
+            store.put(namespace, str(uuid.uuid4()), todo_data)
+            added += 1
 
-    # Initialize the spy for visibility into the tool calls made by Trustcall
-    spy = Spy()
-    
-    # Create the Trustcall extractor for updating the ToDo list 
-    todo_extractor = create_extractor(
-    model,
-    tools=[ToDo],
-    tool_choice=tool_name,
-    enable_inserts=True
-    ).with_listeners(on_end=spy)
-
-    # Invoke the extractor
-    result = todo_extractor.invoke({"messages": updated_messages, 
-                                         "existing": existing_memories})
-
-    # Save save the memories from Trustcall to the store
-    for r, rmeta in zip(result["responses"], result["response_metadata"]):
-        store.put(namespace,
-                  rmeta.get("json_doc_id", str(uuid.uuid4())),
-                  r.model_dump(mode="json"),
-            )
-        
-    # Respond to the tool call made in task_mAIstro, confirming the update    
     tool_calls = state['messages'][-1].tool_calls
-
-    # Extract the changes made by Trustcall and add the the ToolMessage returned to task_mAIstro
-    todo_update_msg = extract_tool_info(spy.called_tools, tool_name)
+    if added == 0 and updated == 0:
+        todo_update_msg = "No ToDo updates were needed."
+    else:
+        parts = []
+        if added:
+            parts.append(f"Added {added} ToDo item{'s' if added != 1 else ''}.")
+        if updated:
+            parts.append(f"Updated {updated} ToDo item{'s' if updated != 1 else ''}.")
+        todo_update_msg = " ".join(parts)
     return {"messages": [{"role": "tool", "content": todo_update_msg, "tool_call_id":tool_calls[0]['id']}]}
 
 def update_instructions(state: MessagesState, config: RunnableConfig, store: BaseStore):

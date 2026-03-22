@@ -2,4 +2,3 @@ langgraph
 langchain-core
 langchain-community
 langchain-ollama
-trustcall

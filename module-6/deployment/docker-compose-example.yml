@@ -16,19 +16,19 @@ services:
         ports:
             - "5432:5432"
         environment:
-            POSTGRES_DB: postgres
-            POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+            POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+            POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
         volumes:
             - langgraph-data:/var/lib/postgresql/data
         healthcheck:
-            test: pg_isready -U postgres
+            test: pg_isready -U ${POSTGRES_USER:-postgres}
             start_period: 10s
             timeout: 1s
             retries: 5
             interval: 5s
     langgraph-api:
-        image: "my-image"
+        image: "${IMAGE_NAME:-my-image}"
         ports:
             - "8123:8000"
         depends_on:
@@ -37,8 +37,8 @@ services:
             langgraph-postgres:
                 condition: service_healthy
         environment:
-            REDIS_URI: redis://langgraph-redis:6379
-            OLLAMA_HOST: "http://host.docker.internal:11434"
-            OLLAMA_MODEL: "llama3.1"
-            LANGSMITH_API_KEY: "your_langsmith_api_key"
-            POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
+            REDIS_URI: "${REDIS_URI:-redis://langgraph-redis:6379}"
+            OLLAMA_HOST: "${OLLAMA_HOST:-http://host.docker.internal:11434}"
+            OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3.1}"
+            LANGSMITH_API_KEY: "${LANGSMITH_API_KEY}"
+            POSTGRES_URI: "${POSTGRES_URI:-postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable}"
